@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Config (contains user-specific paths)
+config.py
+
+# Generated files
+slipbox_index.json
+*.json.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
