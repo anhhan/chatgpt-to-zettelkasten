@@ -6,11 +6,12 @@ A pipeline for extracting atomic notes (Zettelkasten-style) from ChatGPT convers
 
 This toolkit helps you:
 
-1. **Score** conversations for potential value using keyword analysis
-2. **Process** conversations systematically, marking them as gold/skip
-3. **Extract** valuable insights as atomic notes ("Flowers")
-4. **Index** your notes with semantic embeddings
-5. **Search** your slip box using natural language queries
+1. **Ingest** ChatGPT exports (JSON/ZIP) into individual markdown files
+2. **Score** conversations for potential value using keyword analysis
+3. **Process** conversations systematically, marking them as gold/skip
+4. **Extract** valuable insights as atomic notes ("Flowers")
+5. **Index** your notes with semantic embeddings
+6. **Search** your slip box using natural language queries
 
 ## Quick Start
 
@@ -26,76 +27,119 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure paths (edit config.py)
+# Configure paths
 cp config.example.py config.py
-# Edit config.py with your paths
+# Edit config.py with your vault paths
 
-# Scan and score conversations
-python process_conversations.py scan
+# Run full pipeline on ChatGPT export
+python pipeline.py full /path/to/conversations.json
 
-# View top candidates
-python process_conversations.py top 20
-
-# Process and create Flowers manually (or with AI assistance)
-python process_conversations.py mark "filename.md" gold "Flower-Name"
+# Or step by step:
+python pipeline.py ingest /path/to/conversations.json
+python pipeline.py scan
+python pipeline.py mine --top 20
 ```
+
+## Getting Your ChatGPT Export
+
+1. Go to https://chat.openai.com
+2. Click your profile → Settings → Data Controls
+3. Click "Export data"
+4. Wait for email with download link
+5. Download and unzip to get `conversations.json`
 
 ## Pipeline Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ChatGPT Export (JSON)                         │
-│                            │                                     │
-│                            ▼                                     │
-│              ┌─────────────────────────┐                        │
-│              │   Split into .md files   │                        │
-│              └─────────────────────────┘                        │
-│                            │                                     │
-│                            ▼                                     │
-│              ┌─────────────────────────┐                        │
-│              │   Score conversations    │  ◄── Keywords, length  │
-│              │   (process_conversations)│      turn count        │
-│              └─────────────────────────┘                        │
-│                            │                                     │
-│                            ▼                                     │
-│              ┌─────────────────────────┐                        │
-│              │   Human/AI Review        │  ◄── Read, evaluate    │
-│              │   Mark gold/skip         │      extract insights  │
-│              └─────────────────────────┘                        │
-│                            │                                     │
-│              ┌─────────┴─────────┐                              │
-│              ▼                   ▼                              │
-│     ┌──────────────┐    ┌──────────────┐                        │
-│     │   Gold       │    │   Skip       │                        │
-│     │   Create     │    │   Archive    │                        │
-│     │   Flower     │    │              │                        │
-│     └──────────────┘    └──────────────┘                        │
-│              │                                                   │
-│              ▼                                                   │
-│     ┌──────────────────────────────────┐                        │
-│     │   Flowers/ directory             │                        │
-│     │   (Atomic notes with frontmatter)│                        │
-│     └──────────────────────────────────┘                        │
-│              │                                                   │
-│              ▼                                                   │
-│     ┌──────────────────────────────────┐                        │
-│     │   Semantic Index                  │  ◄── sentence-transformers
-│     │   (reindex_slipbox.py)            │      all-MiniLM-L6-v2 │
-│     └──────────────────────────────────┘                        │
-│              │                                                   │
-│              ▼                                                   │
-│     ┌──────────────────────────────────┐                        │
-│     │   Search & Retrieve               │                        │
-│     │   (search_cli.py / MCP server)    │                        │
-│     └──────────────────────────────────┘                        │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  INGEST                                                              │
+│  ┌────────────────────┐      ┌─────────────────────────────────┐    │
+│  │ ChatGPT Export     │      │ Individual Conversation Files   │    │
+│  │ (JSON or ZIP)      │ ───▶ │ YYYY-MM-DD-title-slug.md        │    │
+│  │                    │      │ (ingest_export.py)              │    │
+│  └────────────────────┘      └─────────────────────────────────┘    │
+│                                           │                          │
+├───────────────────────────────────────────┼──────────────────────────┤
+│  SCORE                                    ▼                          │
+│                         ┌─────────────────────────────────┐          │
+│                         │ Score & Rank Conversations      │          │
+│                         │ Keywords, length, turn count    │          │
+│                         │ (process_conversations.py scan) │          │
+│                         └─────────────────────────────────┘          │
+│                                           │                          │
+├───────────────────────────────────────────┼──────────────────────────┤
+│  MINE                                     ▼                          │
+│                         ┌─────────────────────────────────┐          │
+│                         │ Human/AI Review Top Candidates  │          │
+│                         │ Read content, evaluate value    │          │
+│                         │ Extract insights → Flowers      │          │
+│                         └─────────────────────────────────┘          │
+│                                    │              │                  │
+│                              ┌─────┘              └─────┐            │
+│                              ▼                          ▼            │
+│                     ┌──────────────┐          ┌──────────────┐       │
+│                     │    GOLD      │          │    SKIP      │       │
+│                     │ Create Flower│          │   Archive    │       │
+│                     └──────────────┘          └──────────────┘       │
+│                              │                                       │
+├──────────────────────────────┼───────────────────────────────────────┤
+│  INDEX & SEARCH              ▼                                       │
+│                     ┌──────────────────────────────────┐             │
+│                     │ Flowers/ directory               │             │
+│                     │ (Atomic notes with frontmatter)  │             │
+│                     └──────────────────────────────────┘             │
+│                              │                                       │
+│                              ▼                                       │
+│                     ┌──────────────────────────────────┐             │
+│                     │ Semantic Index                   │             │
+│                     │ sentence-transformers embeddings │             │
+│                     │ (reindex_slipbox.py)             │             │
+│                     └──────────────────────────────────┘             │
+│                              │                                       │
+│                              ▼                                       │
+│                     ┌──────────────────────────────────┐             │
+│                     │ Search & Retrieve                │             │
+│                     │ (search_cli.py / MCP server)     │             │
+│                     └──────────────────────────────────┘             │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Components
 
-### 1. process_conversations.py
+### 1. pipeline.py (Recommended)
 
-Main processing script for scoring and tracking conversation processing.
+Unified command for the entire workflow.
+
+```bash
+# Full pipeline: ingest + scan + status
+python pipeline.py full /path/to/conversations.json
+
+# Individual commands
+python pipeline.py ingest /path/to/conversations.json  # Import export
+python pipeline.py scan                                 # Score all
+python pipeline.py mine --top 20                        # Show candidates
+python pipeline.py status                               # Show stats
+python pipeline.py reindex                              # Rebuild index
+python pipeline.py search "your query"                  # Search notes
+```
+
+### 2. ingest_export.py
+
+Splits ChatGPT export into individual conversation files.
+
+```bash
+# From JSON
+python ingest_export.py /path/to/conversations.json
+
+# From ZIP (ChatGPT export download)
+python ingest_export.py /path/to/chatgpt-export.zip
+```
+
+Files are named: `YYYY-MM-DD-conversation-title-slug.md`
+
+### 3. process_conversations.py
+
+Scoring and tracking conversation processing.
 
 ```bash
 # Scan all conversations and calculate scores
@@ -112,7 +156,7 @@ python process_conversations.py mark "filename.md" skip
 python process_conversations.py stats
 ```
 
-### 2. reindex_slipbox.py
+### 5. reindex_slipbox.py
 
 Standalone script to reindex your Flowers with semantic embeddings.
 
@@ -120,7 +164,7 @@ Standalone script to reindex your Flowers with semantic embeddings.
 python reindex_slipbox.py
 ```
 
-### 3. search_cli.py
+### 6. search_cli.py
 
 Command-line semantic search over your indexed notes.
 
@@ -129,7 +173,7 @@ python search_cli.py "coaching frameworks"
 python search_cli.py "how to validate startup ideas"
 ```
 
-### 4. slipbox_server.py
+### 7. slipbox_server.py
 
 MCP (Model Context Protocol) server for integration with Claude and other AI tools.
 
