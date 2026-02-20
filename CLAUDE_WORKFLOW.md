@@ -54,6 +54,16 @@ python3 process_conversations.py learn     # Feed decisions back
 python3 reindex_slipbox.py                 # Rebuild search index
 ```
 
+## Core Policy: No Bulk Skipping
+
+Every conversation MUST be read before marking gold or skip. No exceptions.
+
+- Never mark files as skip based on score alone
+- Always read at least 200 lines before deciding
+- Note the specific reason for skipping
+- Stop processing when diminishing returns are evidence-based (gold rate < 10% for 2 consecutive batches)
+- Delete true duplicates from vault rather than skipping them
+
 ## Seeds vs Flowers
 
 | Type | Layer | Readiness | When to Use |
