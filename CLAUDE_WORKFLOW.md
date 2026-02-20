@@ -24,16 +24,17 @@ Extracts conversations from ZIP, converts to markdown, stores in conversations d
 ### 2. Learn + Rescore (Before Every Mining Session)
 ```bash
 python3 process_conversations.py learn     # Analyse past decisions
+# → Review output, update config.py if patterns suggest changes
 python3 process_conversations.py rescore   # Apply current algorithm
 ```
 
 The `learn` command is the self-improving feedback loop:
 - Gold rate by score band
-- High-score skips (false positives)
-- Low-score gold (missed patterns)
+- High-score skips (false positives → tighten keywords or add LOW_VALUE)
+- Low-score gold (missed patterns → add keywords to DOMAIN_CLUSTERS)
 - Cluster effectiveness
 
-If `learn` reveals patterns, update `config.py` keywords before rescoring.
+**Decision point**: If `learn` reveals actionable patterns, update `config.py` BEFORE rescoring. Rescore only changes scores for unprocessed files — it applies whatever keywords/patterns are in config.py at that moment. If config hasn't changed since last rescore, scores won't shift.
 
 ### 3. Mine (Parallel Agents)
 ```bash
