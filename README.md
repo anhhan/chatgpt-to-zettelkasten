@@ -139,21 +139,17 @@ Files are named: `YYYY-MM-DD-conversation-title-slug.md`
 
 ### 3. process_conversations.py
 
-Scoring and tracking conversation processing.
+Scoring, tracking, and self-learning.
 
 ```bash
-# Scan all conversations and calculate scores
-python process_conversations.py scan
-
-# Show top N unprocessed by score
-python process_conversations.py top 20
-
-# Mark a file as processed
-python process_conversations.py mark "filename.md" gold "Created-Flower-Name"
-python process_conversations.py mark "filename.md" skip
-
-# Show processing statistics
-python process_conversations.py stats
+python process_conversations.py scan              # Score all conversations
+python process_conversations.py rescore           # Rescore with current algorithm
+python process_conversations.py top 20            # Show top N unprocessed
+python process_conversations.py mark "f.md" gold  # Mark as gold
+python process_conversations.py mark "f.md" skip  # Mark as skip
+python process_conversations.py stats             # Processing statistics
+python process_conversations.py learn             # Self-learning feedback loop
+python process_conversations.py review-skips      # Reconsider high-score skips
 ```
 
 ### 5. reindex_slipbox.py
@@ -181,28 +177,30 @@ MCP (Model Context Protocol) server for integration with Claude and other AI too
 python slipbox_server.py
 ```
 
-## Scoring Algorithm
+## Scoring Algorithm (v3)
 
-Conversations are scored based on:
+Multi-signal analysis with tier-weighted domain clusters, structural pattern detection, novel framing detection, and self-learning feedback loop.
 
-| Factor | Points |
-|--------|--------|
-| Word count > 2000 | +3 |
-| Word count > 1000 | +2 |
-| Word count > 500 | +1 |
-| Turn count > 20 | +3 |
-| Turn count > 10 | +2 |
-| Turn count > 5 | +1 |
-| Each high-value keyword | +2 |
-| Each low-value keyword | -1 |
+| Layer | Signal | Points | Cap |
+|-------|--------|--------|-----|
+| 1 | Tier-weighted domain cluster hits | 3-6+ per cluster | -- |
+| 1b | Cross-cluster breadth bonus | 4/8/12 | 12 |
+| 2 | Generic high-value keywords | 1pt each | -- |
+| 3 | Structural signals (steps, matrices) | 3pt each | 15 |
+| 3b | Novel framing signals (tensions, reframes) | 4pt each | 20 |
+| 4 | Length (diminishing returns) | 1-2pt per tier | 5 |
+| 4b | Sustained engagement (30+/60+ turns) | 5pt each | 10 |
+| 5 | Keyword density bonus | 2/5/8 | 8 |
+| 6 | Penalties (low-value, aimless length) | -1 to -5 | -- |
 
-### High-Value Keywords
+### Self-Learning
 
-Frameworks, philosophy, methodology, innovation, coaching, strategy, business model, product, architecture, transformation, purpose, etc.
+The `learn` command analyses gold/skip decisions to find scoring blind spots:
+```bash
+python process_conversations.py learn
+```
 
-### Low-Value Keywords
-
-Code, error, bug, debug, translate, recipe, weather, etc.
+This reveals false positives, false negatives, and cluster effectiveness, feeding improvements back into `config.py`.
 
 ## Flower Template
 
@@ -262,26 +260,28 @@ MANIFEST_PATH = CONVERSATIONS_PATH / "processing_manifest.json"
 INDEX_PATH = VAULT_PATH / ".slipbox" / "index.json"
 ```
 
-## Processing Statistics (Example)
+## Processing Statistics
 
-From processing 1,548 ChatGPT conversations:
+From processing 4,352 ChatGPT conversations (Feb 2026):
 
 | Metric | Value |
 |--------|-------|
-| Total conversations | 1,548 |
-| Gold (valuable) | 124 (8%) |
-| Skipped | 1,424 (92%) |
-| Flowers extracted | 135 |
+| Total conversations | 4,352 |
+| Processed | 1,750 (40.2%) |
+| Gold (valuable) | 232 (13.3%) |
+| Skipped | 1,518 (86.7%) |
+| Seeds + Flowers extracted | 280+ |
 
-### Score Distribution
+### Gold Rate by Score Band
 
-| Score Range | Count | Gold Rate |
-|-------------|-------|-----------|
-| 50+ | 37 | ~90% |
-| 40-49 | 78 | ~60% |
-| 30-39 | 137 | ~30% |
-| 20-29 | 211 | ~10% |
-| <20 | 1,085 | ~2% |
+| Score Range | Gold Rate | Recommendation |
+|-------------|-----------|----------------|
+| 80+ | ~61% | Always process |
+| 60-79 | ~55% | High priority |
+| 50-59 | ~54% | Good candidates |
+| 40-49 | ~45% | Selective |
+| 30-39 | ~28% | Low priority |
+| <30 | ~3% | Skip |
 
 ## Best Practices
 
