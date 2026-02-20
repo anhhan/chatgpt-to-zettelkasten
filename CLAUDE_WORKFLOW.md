@@ -21,20 +21,33 @@ python3 pipeline.py ingest /path/to/OpenAI-export.zip
 
 Extracts conversations from ZIP, converts to markdown, stores in conversations directory.
 
-### 2. Learn + Rescore (Before Every Mining Session)
+### 2. Learn + Integrate + Rescore (MANDATORY Before Every Mining Session)
+
+**Do NOT skip to mining without completing this step.**
+
 ```bash
 python3 process_conversations.py learn     # Analyse past decisions
-# → Review output, update config.py if patterns suggest changes
-python3 process_conversations.py rescore   # Apply current algorithm
 ```
 
-The `learn` command is the self-improving feedback loop:
-- Gold rate by score band
-- High-score skips (false positives → tighten keywords or add LOW_VALUE)
-- Low-score gold (missed patterns → add keywords to DOMAIN_CLUSTERS)
-- Cluster effectiveness
+The `learn` output has four sections. Act on each:
 
-**Decision point**: If `learn` reveals actionable patterns, update `config.py` BEFORE rescoring. Rescore only changes scores for unprocessed files — it applies whatever keywords/patterns are in config.py at that moment. If config hasn't changed since last rescore, scores won't shift.
+**a) Low-Score Gold (false negatives — most actionable):**
+For each low-score gold file listed, read the conversation's first 100 lines and identify 2-3 keywords that should have triggered a cluster match. Collect all missing keywords.
+
+**b) High-Score Skips (false positives):**
+Look for keywords that keep appearing in skipped conversations — add to LOW_VALUE_KEYWORDS if pattern is consistent.
+
+**c) Cluster Effectiveness:**
+Note clusters with gold rate below 35% — their keywords may be too broad.
+
+**d) Update config.py:**
+Add the missing keywords from (a) to the appropriate DOMAIN_CLUSTERS. Add skip-pattern keywords from (b) to LOW_VALUE_KEYWORDS. Then rescore:
+
+```bash
+python3 process_conversations.py rescore   # Apply updated algorithm
+```
+
+Verify the rescore output shows changed scores — this proves the loop worked. If 0 changed but you added keywords, check that config.py saved correctly.
 
 ### 3. Mine (Parallel Agents)
 ```bash
@@ -47,12 +60,22 @@ Launch 3-5 parallel agents, each processing 10 conversations. Agents:
 3. Create Seeds (readiness 2) or Flowers (readiness 3)
 4. Mark as gold/skip in manifest
 
-### 4. Post-Mining
+### 4. Post-Mining Learn Loop (MANDATORY after mining)
+
+**Do NOT just report results. Close the loop first.**
+
 ```bash
 python3 process_conversations.py stats     # Verify marks
 python3 process_conversations.py learn     # Feed decisions back
-python3 reindex_slipbox.py                 # Rebuild search index
 ```
+
+Repeat the same process as Step 2:
+1. Read the `learn` output — check low-score gold and high-score skips from THIS batch
+2. If low-score gold exists: read those conversations, identify missing keywords
+3. Update `config.py` with new keywords
+4. `python3 process_conversations.py rescore` — report how many scores changed
+5. `python3 reindex_slipbox.py` — rebuild search index
+6. Commit changes to git
 
 ## Core Policy: No Bulk Skipping
 
@@ -134,7 +157,7 @@ sourceMaterial: "[[chatgpt-conversations/filename.md]]"
 **Source**: ChatGPT conversation YYYY-MM-DD (Title)
 ```
 
-## Scoring Algorithm (v3)
+## Scoring Algorithm (v3.1)
 
 ### Architecture
 | Layer | Signal | Points | Cap |
@@ -167,12 +190,16 @@ sourceMaterial: "[[chatgpt-conversations/filename.md]]"
 
 ## Self-Learning Workflow
 
-After each mining session:
-1. `python3 process_conversations.py learn`
-2. Review output for patterns
-3. Update `config.py` if needed (keywords, patterns, penalties)
-4. `python3 process_conversations.py rescore`
-5. Update `SCORING_LEARNINGS.md`
+The learn → integrate → rescore loop runs twice per session:
+1. **Before mining** (Step 2): integrates learnings from ALL previous sessions
+2. **After mining** (Step 4): integrates learnings from THIS session's decisions
+
+Each loop:
+1. `python3 process_conversations.py learn` — identify patterns
+2. Read low-score gold conversations — find missing keywords
+3. Update `config.py` — add keywords to clusters
+4. `python3 process_conversations.py rescore` — apply changes
+5. Verify scores shifted — proves the loop worked
 6. Commit to git
 
 ## Commands Quick Reference
@@ -205,5 +232,5 @@ python3 pipeline.py ingest /path/to/export.zip  # Ingest new export
 
 ---
 
-**Last Updated**: 2026-02-21
+**Last Updated**: 2026-02-22
 **Maintained By**: Claude Code sessions with Anh
