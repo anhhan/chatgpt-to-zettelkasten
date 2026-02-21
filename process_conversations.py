@@ -11,11 +11,15 @@ Usage:
     python process_conversations.py mark <file> <status> [flower] - Mark as gold/skip
     python process_conversations.py review-skips [N] - Review high-score skips for reconsideration
     python process_conversations.py learn    - Analyse gold/skip decisions to improve scoring
+    python process_conversations.py verify   - Check manifest integrity (--repair to fix)
 """
 
+import fcntl
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from datetime import datetime
 
@@ -32,20 +36,103 @@ except ImportError:
     sys.exit(1)
 
 
-def load_manifest():
-    """Load the processing manifest from disk."""
-    if MANIFEST_PATH.exists():
-        with open(MANIFEST_PATH, 'r') as f:
-            return json.load(f)
-    return {"version": 1, "stats": {}, "files": {}}
+LOCK_PATH = MANIFEST_PATH.parent / ".chatgpt_processing.lock"
+BACKUP_PATH = MANIFEST_PATH.parent / "chatgpt_processing.backup.json"
 
 
-def save_manifest(manifest):
-    """Save the processing manifest to disk."""
-    manifest["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(MANIFEST_PATH, 'w') as f:
-        json.dump(manifest, f, indent=2)
+def _acquire_lock(lock_file, exclusive=True):
+    """Acquire a file lock (exclusive for writes, shared for reads)."""
+    lock_type = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    fcntl.flock(lock_file, lock_type)
+
+
+def _release_lock(lock_file):
+    """Release a file lock."""
+    fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def load_manifest(lock_file=None):
+    """Load the processing manifest from disk with shared lock.
+
+    If lock_file is provided, assumes caller already holds the lock.
+    Otherwise acquires a shared lock for the read.
+    """
+    own_lock = lock_file is None
+    if own_lock:
+        LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = open(LOCK_PATH, 'w')
+        _acquire_lock(lock_file, exclusive=False)
+
+    try:
+        if MANIFEST_PATH.exists():
+            try:
+                with open(MANIFEST_PATH, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"Warning: Manifest corrupted ({e}), trying backup...")
+                if BACKUP_PATH.exists():
+                    try:
+                        with open(BACKUP_PATH, 'r') as f:
+                            return json.load(f)
+                    except (json.JSONDecodeError, ValueError):
+                        print("Error: Backup also corrupted.")
+                        raise
+                raise
+        return {"version": 1, "stats": {}, "files": {}}
+    finally:
+        if own_lock:
+            _release_lock(lock_file)
+            lock_file.close()
+
+
+def save_manifest(manifest, lock_file=None):
+    """Save the processing manifest atomically with exclusive lock.
+
+    Writes to a temp file then does os.replace() for atomic rename.
+    Keeps a backup of the previous version.
+
+    If lock_file is provided, assumes caller already holds the lock.
+    """
+    own_lock = lock_file is None
+    if own_lock:
+        LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = open(LOCK_PATH, 'w')
+        _acquire_lock(lock_file, exclusive=True)
+
+    try:
+        manifest["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write to temp file in same directory (same filesystem for atomic rename)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(MANIFEST_PATH.parent),
+            prefix=".manifest_tmp_",
+            suffix=".json",
+        )
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(manifest, f, indent=2)
+
+            # Backup current manifest before replacing
+            if MANIFEST_PATH.exists():
+                try:
+                    os.replace(str(MANIFEST_PATH), str(BACKUP_PATH))
+                except OSError:
+                    pass  # Best-effort backup
+
+            # Atomic replace
+            os.replace(tmp_path, str(MANIFEST_PATH))
+        except BaseException:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    finally:
+        if own_lock:
+            _release_lock(lock_file)
+            lock_file.close()
 
 
 def score_conversation(file_path: Path) -> dict:
@@ -367,31 +454,43 @@ def get_top_candidates(n=20):
 
 
 def mark_processed(filename: str, status: str, flowers: list = None):
-    """Mark a file as processed with status (gold/skip)."""
-    manifest = load_manifest()
+    """Mark a file as processed with status (gold/skip).
 
-    if filename not in manifest["files"]:
-        # Try fuzzy match
-        matches = [f for f in manifest["files"] if filename in f]
-        if len(matches) == 1:
-            filename = matches[0]
-        elif len(matches) > 1:
-            print(f"Multiple matches found for '{filename}':")
-            for m in matches[:5]:
-                print(f"  - {m}")
-            return False
-        else:
-            print(f"File not found: {filename}")
-            return False
+    Uses exclusive lock for the entire load-modify-save cycle to prevent
+    concurrent mark calls from clobbering each other.
+    """
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(LOCK_PATH, 'w')
+    _acquire_lock(lock_file, exclusive=True)
 
-    manifest["files"][filename]["status"] = status
-    manifest["files"][filename]["processed_date"] = datetime.now().strftime("%Y-%m-%d")
-    if flowers:
-        manifest["files"][filename]["flowers_extracted"] = flowers
+    try:
+        manifest = load_manifest(lock_file=lock_file)
 
-    update_stats(manifest)
-    save_manifest(manifest)
-    return True
+        if filename not in manifest["files"]:
+            # Try fuzzy match
+            matches = [f for f in manifest["files"] if filename in f]
+            if len(matches) == 1:
+                filename = matches[0]
+            elif len(matches) > 1:
+                print(f"Multiple matches found for '{filename}':")
+                for m in matches[:5]:
+                    print(f"  - {m}")
+                return False
+            else:
+                print(f"File not found: {filename}")
+                return False
+
+        manifest["files"][filename]["status"] = status
+        manifest["files"][filename]["processed_date"] = datetime.now().strftime("%Y-%m-%d")
+        if flowers:
+            manifest["files"][filename]["flowers_extracted"] = flowers
+
+        update_stats(manifest)
+        save_manifest(manifest, lock_file=lock_file)
+        return True
+    finally:
+        _release_lock(lock_file)
+        lock_file.close()
 
 
 def print_stats():
@@ -577,6 +676,130 @@ def learn_from_decisions():
         print("  Review these conversations for keywords to add to clusters.")
 
 
+def verify_manifest(repair=False):
+    """Verify manifest integrity and cross-reference with files on disk.
+
+    Checks:
+    1. JSON validity of manifest (and backup)
+    2. Files on disk that are missing from manifest
+    3. Manifest entries pointing to files that don't exist on disk
+    4. Stats consistency
+
+    If repair=True and manifest is corrupted, restores from backup.
+    """
+    print("\n=== Manifest Integrity Check ===\n")
+    issues = 0
+
+    # 1. JSON validity
+    manifest = None
+    manifest_ok = False
+    backup_ok = False
+
+    if MANIFEST_PATH.exists():
+        try:
+            with open(MANIFEST_PATH, 'r') as f:
+                manifest = json.load(f)
+            manifest_ok = True
+            print(f"[OK] Manifest JSON valid ({len(manifest.get('files', {}))} entries)")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[FAIL] Manifest corrupted: {e}")
+            issues += 1
+    else:
+        print(f"[WARN] Manifest not found at {MANIFEST_PATH}")
+        issues += 1
+
+    if BACKUP_PATH.exists():
+        try:
+            with open(BACKUP_PATH, 'r') as f:
+                backup = json.load(f)
+            backup_ok = True
+            print(f"[OK] Backup JSON valid ({len(backup.get('files', {}))} entries)")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[WARN] Backup corrupted: {e}")
+    else:
+        print(f"[INFO] No backup file found")
+
+    # Repair from backup if needed
+    if not manifest_ok and backup_ok and repair:
+        print("\n[REPAIR] Restoring manifest from backup...")
+        manifest = backup
+        save_manifest(manifest)
+        manifest_ok = True
+        print("[REPAIR] Manifest restored successfully")
+
+    if not manifest_ok:
+        if backup_ok:
+            print("\n[HINT] Run with --repair to restore from backup")
+        else:
+            print("\n[ERROR] No valid manifest or backup. Run 'scan' to rebuild.")
+        return issues
+
+    # 2. Cross-reference files on disk vs manifest
+    if CONVERSATIONS_PATH.exists():
+        disk_files = {f.name for f in CONVERSATIONS_PATH.glob("*.md")}
+        manifest_files = set(manifest.get("files", {}).keys())
+
+        missing_from_manifest = disk_files - manifest_files
+        orphaned_in_manifest = manifest_files - disk_files
+
+        if missing_from_manifest:
+            print(f"\n[WARN] {len(missing_from_manifest)} files on disk not in manifest:")
+            for f in sorted(missing_from_manifest)[:10]:
+                print(f"  + {f}")
+            if len(missing_from_manifest) > 10:
+                print(f"  ... and {len(missing_from_manifest) - 10} more")
+            issues += len(missing_from_manifest)
+        else:
+            print(f"[OK] All {len(disk_files)} disk files present in manifest")
+
+        if orphaned_in_manifest:
+            print(f"\n[WARN] {len(orphaned_in_manifest)} manifest entries with no file on disk:")
+            for f in sorted(orphaned_in_manifest)[:10]:
+                print(f"  - {f}")
+            if len(orphaned_in_manifest) > 10:
+                print(f"  ... and {len(orphaned_in_manifest) - 10} more")
+            issues += len(orphaned_in_manifest)
+        else:
+            print(f"[OK] All manifest entries have files on disk")
+    else:
+        print(f"[WARN] Conversations path not found: {CONVERSATIONS_PATH}")
+
+    # 3. Stats consistency
+    files = manifest.get("files", {})
+    actual_gold = sum(1 for f in files.values() if f.get("status") == "gold")
+    actual_skip = sum(1 for f in files.values() if f.get("status") == "skip")
+    actual_pending = sum(1 for f in files.values() if not f.get("status"))
+    actual_total = len(files)
+
+    stats = manifest.get("stats", {})
+    stats_match = (
+        stats.get("gold", 0) == actual_gold
+        and stats.get("skip", 0) == actual_skip
+        and stats.get("pending", 0) == actual_pending
+        and stats.get("total", 0) == actual_total
+    )
+
+    if stats_match:
+        print(f"[OK] Stats consistent (gold={actual_gold}, skip={actual_skip}, pending={actual_pending})")
+    else:
+        print(f"[WARN] Stats inconsistent — expected gold={actual_gold}, skip={actual_skip}, pending={actual_pending}, total={actual_total}")
+        print(f"       Manifest stats: {stats}")
+        issues += 1
+        if repair:
+            print("[REPAIR] Recalculating stats...")
+            update_stats(manifest)
+            save_manifest(manifest)
+            print("[REPAIR] Stats fixed")
+
+    # Summary
+    if issues == 0:
+        print(f"\n[PASS] All checks passed")
+    else:
+        print(f"\n[ISSUES] {issues} issue(s) found")
+
+    return issues
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -640,6 +863,10 @@ def main():
 
     elif cmd == "learn":
         learn_from_decisions()
+
+    elif cmd == "verify":
+        repair = "--repair" in sys.argv
+        verify_manifest(repair=repair)
 
     elif cmd == "dist" or cmd == "distribution":
         print_score_distribution()

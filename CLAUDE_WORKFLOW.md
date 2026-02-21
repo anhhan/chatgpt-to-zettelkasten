@@ -51,10 +51,11 @@ Verify the rescore output shows changed scores — this proves the loop worked. 
 
 ### 3. Mine (Parallel Agents)
 ```bash
+python3 process_conversations.py verify    # Check manifest integrity first
 python3 process_conversations.py top 50    # Get candidates
 ```
 
-Launch 3-5 parallel agents, each processing 10 conversations. Agents:
+Launch up to 10 parallel agents, each processing 10 conversations. Agents:
 1. Read and evaluate conversations
 2. Check vault for duplicates
 3. Create Seeds (readiness 2) or Flowers (readiness 3)
@@ -76,6 +77,28 @@ Repeat the same process as Step 2:
 4. `python3 process_conversations.py rescore` — report how many scores changed
 5. `python3 reindex_slipbox.py` — rebuild search index
 6. Commit changes to git
+
+### Overnight Batch Mode
+
+For large backlogs, launch looping agents before sleep and collect results in the morning:
+
+- **Rate limits** operate on a 5-hour window — overnight runs fit comfortably
+- **Looping agents**: each agent pulls the next conversation from `top`, processes it, marks it, then loops back — keeps going until rate-limited or backlog exhausted
+- **Safety cap**: 50 conversations per agent to bound context growth
+- **Proven scale**: 10 looping agents in parallel
+- **Use `run_in_background=true`** so agents run independently
+- **Collect results** with `TaskOutput` in the next session
+- **Post-mining learn loop** runs after all agents complete (next session, not overnight)
+- **Always verify** before and after: `python3 process_conversations.py verify`
+
+### Manifest Safety
+
+The manifest uses atomic writes (temp file + `os.replace()`) and file locking (`fcntl.flock()`) to prevent corruption from concurrent agent writes. A backup (`chatgpt_processing.backup.json`) is kept automatically.
+
+```bash
+python3 process_conversations.py verify            # Check integrity
+python3 process_conversations.py verify --repair   # Restore from backup if corrupted
+```
 
 ## Core Policy: No Bulk Skipping
 
@@ -212,6 +235,8 @@ python3 process_conversations.py rescore        # Rescore with current algorithm
 python3 process_conversations.py mark "f" gold  # Mark as gold
 python3 process_conversations.py mark "f" skip  # Mark as skip
 python3 process_conversations.py review-skips   # Reconsider high-score skips
+python3 process_conversations.py verify         # Check manifest integrity
+python3 process_conversations.py verify --repair # Fix from backup if corrupted
 python3 reindex_slipbox.py                      # Rebuild semantic search
 python3 pipeline.py ingest /path/to/export.zip  # Ingest new export
 ```
