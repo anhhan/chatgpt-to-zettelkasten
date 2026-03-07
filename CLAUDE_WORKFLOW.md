@@ -87,8 +87,9 @@ For large backlogs, launch looping agents before sleep and collect results in th
 - **Safety cap**: 50 conversations per agent to bound context growth
 - **Proven scale**: 10 looping agents in parallel
 - **Use `run_in_background=true`** so agents run independently
-- **Collect results** with `TaskOutput` in the next session
-- **Post-mining learn loop** runs after all agents complete (next session, not overnight)
+- **Inline learn loop**: after every 10 conversations, each agent runs `learn`, checks for new low-score gold from its own marks, and notes missing keywords in its final summary. Config.py edits are batched by the orchestrator session, not individual agents.
+- **Do NOT stop at score 20** — the 20-29 band yields ~13-22% gold rate. Only stop when scores drop below 10, or gold rate drops below 5% for 2 consecutive mini-batches of 10.
+- **Collect results** with `TaskOutput` in the next session — each agent's summary includes keyword recommendations for config.py
 - **Always verify** before and after: `python3 process_conversations.py verify`
 
 ### Manifest Safety
